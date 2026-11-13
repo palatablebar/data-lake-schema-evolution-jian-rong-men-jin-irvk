@@ -61,6 +61,11 @@ def serialize(request: ChangeRequest, dataset: Dataset | None = None) -> dict:
         "affected_tasks": int(impact.get("task_count") or 0),
         "affected_reports": int(impact.get("report_count") or 0),
         "affected_consumers": int(impact.get("consumer_count") or 0),
+        "read_task_count": len(impact.get("read_tasks") or []),
+        "write_task_count": len(impact.get("write_tasks") or []),
+        "pending_review_count": int(impact.get("pending_count") or 0),
+        "queries_to_fix": impact.get("queries_to_fix") or [],
+        "backfill_tasks": impact.get("backfill_tasks") or [],
     }
 
 
@@ -91,6 +96,10 @@ def _consumers_of(db: Session, dataset_id: int) -> list[dict]:
             "columns": row.columns or [],
             "tasks": row.tasks or [],
             "reports": row.reports or [],
+            "read_columns": row.read_columns or [],
+            "write_columns": row.write_columns or [],
+            "read_tasks": row.read_tasks or [],
+            "write_tasks": row.write_tasks or [],
         }
         for row in rows
     ]
@@ -243,15 +252,14 @@ def run_checks(db: Session, request: ChangeRequest) -> dict:
     request.checked_at = utcnow()
 
     existing = {
-        row.field: row
+        (row.field, row.change_type): row
         for row in db.scalars(select(CompatCheck).where(CompatCheck.request_id == request.id)).all()
     }
     for item in result["diff"]:
-        row = existing.pop(item["field"], None)
+        row = existing.pop((item["field"], item["change_type"]), None)
         if row is None:
-            row = CompatCheck(request_id=request.id, field=item["field"])
+            row = CompatCheck(request_id=request.id, field=item["field"], change_type=item["change_type"])
             db.add(row)
-        row.change_type = item["change_type"]
         row.breaking = bool(item["breaking"])
         row.detail = item["detail"]
     for stale in existing.values():
@@ -296,6 +304,7 @@ def serialize_check(row: CompatCheck) -> dict:
         "change_type_label": CHANGE_TYPE_LABELS.get(row.change_type, row.change_type),
         "breaking": bool(row.breaking),
         "detail": row.detail,
+        "check_key": f"{row.field}:{row.change_type}",
         "created_at": iso_utc(row.created_at),
     }
 

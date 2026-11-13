@@ -167,7 +167,16 @@ export function gauge({ ratio, label, caption }) {
   </div>`;
 }
 
-const DIFF_FLAG = { remove_column: '删除', rename_column: '改名', type_change: '类型', add_column: '新增' };
+const DIFF_FLAG = {
+  remove_column: '删除',
+  rename_column: '改名',
+  type_change: '类型',
+  nullable_tighten: '收紧可空',
+  nullable_relax: '放宽可空',
+  default_remove: '取消默认',
+  default_change: '默认值',
+  add_column: '新增',
+};
 
 /** diff 左右对照：左侧基线版本字段，右侧目标字段。 */
 export function diffColumns({ baseFields, targetFields, diff }) {
@@ -236,4 +245,66 @@ export function diffLedger(diff) {
 
 export function sqlBlock(sql, testId = 'migration-sql') {
   return `<pre class="sql-block" data-testid="${esc(testId)}">${esc(sql || '-- 暂无迁移单')}</pre>`;
+}
+
+/**
+ * 下游处置清单：待复核（丢列读取 / 缺值写入）+ 安全提示。
+ * 每条依赖可展开看原因与所属任务 / 报表；按任务与报表去重由后端保证。
+ */
+export function reviewBlock(impact = {}) {
+  const pending = impact.pending_dependencies || [];
+  const advisory = impact.advisory_dependencies || [];
+  const queries = impact.queries_to_fix || [];
+  const backfills = impact.backfill_tasks || [];
+  if (!pending.length && !advisory.length) {
+    return '<p class="muted">没有下游依赖命中本次变更列。</p>';
+  }
+  const row = (dep, tone) => {
+    const reasons = (dep.reasons || []).map((reason) => `<li>${esc(reason)}</li>`).join('');
+    const kindLabel = dep.kind === 'report' ? '报表' : '任务';
+    const sideLabel = dep.side === 'write' ? '写入' : '读取';
+    return `<div class="review-row ${tone}" data-testid="review-row">
+      <button class="review-head" type="button" aria-expanded="false">
+        <span class="badge ${tone}">${dep.review_state === 'pending_review' ? '待复核' : '已确认'}</span>
+        <b class="mono">${esc(dep.name)}</b>
+        <span class="muted">${esc(kindLabel)} · ${esc(sideLabel)} · ${esc(dep.consumer || '—')}</span>
+        <span class="review-caret" aria-hidden="true">▸</span>
+      </button>
+      <ul class="review-reasons" hidden>${reasons}</ul>
+    </div>`;
+  };
+  return `<div class="review-block" data-testid="review-block">
+    <div class="review-summary">
+      <span class="badge danger">待复核 ${pending.length}</span>
+      ${queries.length ? `<span class="annot-note">需改查询：${esc(queries.join('、'))}</span>` : ''}
+      ${backfills.length ? `<span class="annot-note">需补值任务：${esc(backfills.join('、'))}</span>` : ''}
+    </div>
+    ${pending.length ? `<div class="review-list">${pending.map((dep) => row(dep, 'danger')).join('')}</div>` : ''}
+    ${advisory.length
+      ? `<details class="review-advisory">
+          <summary>安全提示（${advisory.length}）：不阻塞，下游确认空值 / 默认值口径即可</summary>
+          <div class="review-list">${advisory.map((dep) => row(dep, 'ok')).join('')}</div>
+        </details>`
+      : ''}
+  </div>`;
+}
+
+/** 绑定待复核清单的展开 / 收起（事件委托，重渲染后重新绑定即可）。 */
+export function bindReviewExpand(container) {
+  container?.querySelectorAll('.review-head').forEach((head) => {
+    head.addEventListener('click', () => {
+      const reasons = head.parentElement.querySelector('.review-reasons');
+      const caret = head.querySelector('.review-caret');
+      const open = reasons.hasAttribute('hidden');
+      if (open) {
+        reasons.removeAttribute('hidden');
+        head.setAttribute('aria-expanded', 'true');
+        if (caret) caret.textContent = '▾';
+      } else {
+        reasons.setAttribute('hidden', '');
+        head.setAttribute('aria-expanded', 'false');
+        if (caret) caret.textContent = '▸';
+      }
+    });
+  });
 }

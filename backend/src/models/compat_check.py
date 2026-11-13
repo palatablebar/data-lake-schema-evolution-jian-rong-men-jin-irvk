@@ -1,4 +1,8 @@
-"""附加实体 2：CompatCheck（一次检测在「字段级」的判定结果）。自然键 = (request_id, field)。"""
+"""附加实体 2：CompatCheck（一次检测在「字段级」的判定结果）。
+
+自然键 = (request_id, field, change_type)：同一字段可能同时发生类型、可空性、默认值多项契约变更，
+重跑检测按该三元组幂等刷新，判定与影响不会重复累积。
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,7 +16,7 @@ from src.utils.timeutil import utcnow
 
 class CompatCheck(Base):
     __tablename__ = "compat_checks"
-    __table_args__ = (UniqueConstraint("request_id", "field", name="uq_compat_checks_request_field"),)
+    __table_args__ = (UniqueConstraint("request_id", "field", "change_type", name="uq_compat_checks_request_field_type"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("change_requests.id", ondelete="CASCADE"), index=True)

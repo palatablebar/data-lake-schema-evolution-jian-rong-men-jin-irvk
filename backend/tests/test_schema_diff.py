@@ -124,3 +124,83 @@ def test_breaking_entries_sort_first():
     diff = schema_diff.diff_fields(base, target)
     assert diff[0]["breaking"] is True
     assert diff[0]["field"] == "region"
+
+
+# ---------------------------------------------------------------- 可空性 / 默认值契约核对
+def test_nullable_tighten_is_breaking_and_carries_contract():
+    base = [{"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": "0"}]
+    target = [{"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": "0"}]
+    target[0]["nullable"] = False
+    diff = by_field(schema_diff.diff_fields(base, target))
+    entry = diff["amount"]
+    assert entry["change_type"] == ChangeType.NULLABLE_TIGHTEN.value
+    assert entry["breaking"] is True
+    assert entry["from_nullable"] is True and entry["to_nullable"] is False
+
+
+def test_nullable_relax_is_safe():
+    base = [{"name": "amount", "type": "decimal(12,2)", "nullable": False}]
+    target = [{"name": "amount", "type": "decimal(12,2)", "nullable": True}]
+    entry = schema_diff.diff_fields(base, target)[0]
+    assert entry["change_type"] == ChangeType.NULLABLE_RELAX.value
+    assert entry["breaking"] is False
+
+
+def test_default_remove_breaking_only_when_required():
+    # 目标必填：取消默认值 → breaking（写入失去兜底）
+    base = [{"name": "amount", "type": "decimal(12,2)", "nullable": False, "default": "0"}]
+    target = [{"name": "amount", "type": "decimal(12,2)", "nullable": False, "default": None}]
+    entry = schema_diff.diff_fields(base, target)[0]
+    assert entry["change_type"] == ChangeType.DEFAULT_REMOVE.value
+    assert entry["breaking"] is True
+    assert entry["from_default"] == "0" and entry["to_default"] is None
+
+    # 目标仍可空：取消默认值 → 安全（未赋值按 NULL 写入）
+    base2 = [{"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": "0"}]
+    target2 = [{"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": None}]
+    entry2 = schema_diff.diff_fields(base2, target2)[0]
+    assert entry2["change_type"] == ChangeType.DEFAULT_REMOVE.value
+    assert entry2["breaking"] is False
+
+
+def test_default_change_is_safe():
+    base = [{"name": "currency", "type": "string", "nullable": False, "default": "CNY"}]
+    target = [{"name": "currency", "type": "string", "nullable": False, "default": "USD"}]
+    entry = schema_diff.diff_fields(base, target)[0]
+    assert entry["change_type"] == ChangeType.DEFAULT_CHANGE.value
+    assert entry["breaking"] is False
+
+
+def test_contract_changes_coexist_as_separate_entries_per_field():
+    # 同一字段同时改类型 + 收紧可空 + 取消默认：三条 diff 各自成条，(field, change_type) 唯一
+    base = [{"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": "0"}]
+    target = [{"name": "amount", "type": "bigint", "nullable": False, "default": None}]
+    diff = schema_diff.diff_fields(base, target)
+    keys = {(item["field"], item["change_type"]) for item in diff}
+    assert keys == {
+        ("amount", ChangeType.TYPE_CHANGE.value),
+        ("amount", ChangeType.NULLABLE_TIGHTEN.value),
+        ("amount", ChangeType.DEFAULT_REMOVE.value),
+    }
+    assert all(item["breaking"] for item in diff)
+
+
+def test_incident_amount_tighten_is_no_longer_silently_passed():
+    # 故障复盘：amount 从可空带默认收紧为必填且无默认，旧实现无 diff（误放行），新实现必须 breaking
+    base = [
+        {"name": "order_id", "type": "bigint", "nullable": False},
+        {"name": "amount", "type": "decimal(12,2)", "nullable": True, "default": "0"},
+    ]
+    target = [
+        {"name": "order_id", "type": "bigint", "nullable": False},
+        {"name": "amount", "type": "decimal(12,2)", "nullable": False, "default": None},
+    ]
+    diff = schema_diff.diff_fields(base, target)
+    assert len(diff) == 2
+    assert {item["change_type"] for item in diff} == {
+        ChangeType.NULLABLE_TIGHTEN.value,
+        ChangeType.DEFAULT_REMOVE.value,
+    }
+    assert all(item["breaking"] for item in diff)
+    # 类型本身未变，不能产出 type_change
+    assert all(item["change_type"] != ChangeType.TYPE_CHANGE.value for item in diff)

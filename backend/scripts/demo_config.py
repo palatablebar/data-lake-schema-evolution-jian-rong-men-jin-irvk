@@ -1,4 +1,4 @@
-"""演示数据（运联科技 Iceberg 湖仓 240 张表中的 36 张核心表 + 8 个真实变更申请）。
+"""演示数据（运联科技 Iceberg 湖仓 240 张表中的 36 张核心表 + 9 个真实变更申请）。
 
 设计原则：
 - 全部确定性（无随机、无时间依赖的差异），seed 幂等后两次 SEED_SUMMARY 逐字一致；
@@ -195,56 +195,61 @@ def version_committed_offsets(total_versions: int) -> list[int]:
     return [index * 3 for index in range(total_versions)]
 
 
-# ---------------------------------------------------------------- 42 个下游消费方
-# (表, 名称, 团队, 负责人, 引用列, 任务, 报表)
-CONSUMERS: list[tuple[str, str, str, str, list[str], list[str], list[str]]] = [
-    ("dwd.dwd_order_detail", "订单实时大屏", "实时数仓", "张岩", ["order_id", "amount"], ["t_order_realtime_agg"], []),
-    ("dwd.dwd_order_detail", "经营日报 · GMV", "经营分析", "李蔓", ["amount", "pay_channel"], ["t_daily_gmv"], ["r_gmv_daily"]),
-    ("dwd.dwd_order_detail", "渠道对账", "财务对账", "王戈", ["pay_channel"], ["t_channel_recon"], ["r_channel_diff"]),
-    ("dwd.dwd_order_detail", "商家结算", "商家侧", "赵晗", ["amount", "shop_id"], ["t_settlement_calc"], []),
-    ("dwd.dwd_order_detail", "退款率监控", "风控", "孙倩", ["order_id", "amount"], ["t_refund_watch"], []),
-    ("dwd.dwd_order_detail", "订单明细导出", "BI 报表", "陈昊", ["order_id", "created_at"], ["t_order_export"], ["r_order_detail_dump"]),
-    ("dwd.dwd_order_detail", "履约时效分析", "物流运营", "周驰", ["order_id", "shop_id"], ["t_delivery_eta"], []),
-    ("dwd.dwd_pay_detail", "支付成功率看板", "实时数仓", "张岩", ["pay_status"], ["t_pay_success"], []),
-    ("dwd.dwd_user_base", "用户画像特征", "算法特征", "刘越", ["user_id", "city"], ["t_user_feature"], []),
-    ("dwd.dwd_shop_base", "商家分层", "商家侧", "赵晗", ["shop_id", "shop_level"], ["t_shop_tier"], []),
-    ("dwd.dwd_shop_base", "门店热力图", "BI 报表", "陈昊", ["shop_id", "city"], ["t_shop_heatmap"], ["r_shop_heat"]),
-    ("dwd.dwd_item_base", "商品在架同步", "数据服务", "何川", ["item_id", "sale_status"], ["t_item_sync"], []),
-    ("dwd.dwd_item_base", "价格带分析", "经营分析", "李蔓", ["item_id", "list_price"], ["t_price_band"], ["r_price_band"]),
-    ("dwd.dwd_delivery_detail", "承运商月度结算", "财务对账", "王戈", ["waybill_no", "freight_amount"], ["t_carrier_settle"], []),
-    ("dwd.dwd_refund_detail", "退款原因归因", "风控", "孙倩", ["refund_id", "refund_reason"], ["t_refund_reason"], ["r_refund_reason"]),
-    ("dwd.dwd_campaign_touch", "投放 ROI", "经营分析", "李蔓", ["campaign_id", "cost_amount"], ["t_campaign_roi"], []),
-    ("dwd.dwd_inventory_daily", "库存预警", "供应链", "吴桐", ["sku_id", "stock_qty"], ["t_stock_alert"], ["r_stock_alert"]),
-    ("dwd.dwd_traffic_session", "流量漏斗", "经营分析", "李蔓", ["event_id", "user_id"], ["t_funnel"], ["r_funnel"]),
-    ("ods.ods_order_raw", "贴源校验", "数据平台", "林可", ["order_id"], ["t_ods_check"], []),
-    ("ods.ods_pay_transaction", "支付源表对账", "财务对账", "王戈", ["pay_id", "amount"], ["t_pay_ods_recon"], []),
-    ("ods.ods_user_profile", "画像回灌", "算法特征", "刘越", ["user_id", "mobile"], ["t_profile_backfill"], []),
-    ("ods.ods_shop_info", "门店主数据同步", "数据服务", "何川", ["shop_id", "shop_name"], ["t_shop_master_sync"], []),
-    ("ods.ods_item_snapshot", "商品快照归档", "数据服务", "何川", ["item_id"], ["t_item_archive"], ["r_item_archive"]),
-    ("ods.ods_delivery_track", "轨迹补齐", "物流运营", "周驰", ["waybill_no"], ["t_track_fix"], []),
-    ("ods.ods_refund_apply", "售后工单", "风控", "孙倩", ["refund_id", "refund_status"], ["t_after_sale"], []),
-    ("ods.ods_campaign_click", "点击归因", "经营分析", "李蔓", ["campaign_id", "user_id"], ["t_click_attr"], []),
-    ("ods.ods_inventory_snapshot", "库存快照校验", "供应链", "吴桐", ["sku_id", "stock_qty"], ["t_stock_check"], []),
-    ("ods.ods_app_event", "埋点清洗", "数据平台", "林可", ["event_id", "event_code"], ["t_event_clean"], []),
-    ("dws.dws_shop_sales_1d", "门店日报", "经营分析", "李蔓", ["shop_id", "monthly_gmv"], ["t_shop_daily"], ["r_shop_daily"]),
-    ("dws.dws_user_active_1d", "沉默召回名单", "算法特征", "刘越", ["user_id", "mobile"], ["t_recall_list"], []),
-    ("dws.dws_item_sales_1d", "商品销量榜", "BI 报表", "陈昊", ["item_id", "list_price"], ["t_item_rank"], ["r_item_rank"]),
-    ("dws.dws_delivery_sla_1d", "时效达成看板", "物流运营", "周驰", ["carrier", "delivery_status"], ["t_sla_achieve"], ["r_sla_daily"]),
-    ("dws.dws_refund_rate_1d", "退款率看板", "风控", "孙倩", ["refund_id", "refund_amount"], ["t_refund_rate"], []),
-    ("dws.dws_campaign_roi_1d", "渠道成本归集", "财务对账", "王戈", ["campaign_id", "cost_amount"], ["t_channel_cost"], []),
-    ("dim.dim_shop", "维表广播", "数据服务", "何川", ["shop_id", "shop_name"], ["t_dim_shop_broadcast"], []),
-    ("dim.dim_user", "用户维表同步", "数据服务", "何川", ["user_id", "user_name"], ["t_dim_user_broadcast"], []),
-    ("dim.dim_item", "商品维表同步", "数据服务", "何川", ["item_id", "item_name"], ["t_dim_item_broadcast"], []),
-    ("dim.dim_channel", "渠道字典下发", "数据服务", "何川", ["pay_channel"], ["t_channel_dict"], ["r_channel_dict"]),
-    ("ads.ads_gmv_daily", "管理驾驶舱", "BI 报表", "陈昊", ["dt", "monthly_gmv"], ["t_exec_dashboard"], ["r_exec_gmv"]),
-    ("ads.ads_delivery_sla", "履约月报", "物流运营", "周驰", ["carrier", "freight_amount"], ["t_sla_monthly"], ["r_sla_monthly"]),
-    ("ads.ads_refund_daily", "售后月报", "风控", "孙倩", ["refund_amount", "refund_status"], ["t_refund_monthly"], []),
-    ("ads.ads_user_growth", "增长月报", "经营分析", "李蔓", ["user_id", "register_at"], ["t_growth_monthly"], ["r_growth"]),
+# ---------------------------------------------------------------- 45 个下游消费方
+# (表, 名称, 团队, 负责人, 读取引用列, 写入引用列, 读取任务, 写入任务, 报表)
+# 读取任务 = SELECT/聚合类调度；写入任务 = 向该表 INSERT/UPDATE 的调度，字段契约收紧时需补值。
+CONSUMERS: list[tuple[str, str, str, str, list[str], list[str], list[str], list[str], list[str]]] = [
+    ("dwd.dwd_order_detail", "订单实时大屏", "实时数仓", "张岩", ["order_id", "amount"], [], ["t_order_realtime_agg"], [], []),
+    ("dwd.dwd_order_detail", "经营日报 · GMV", "经营分析", "李蔓", ["amount", "pay_channel"], [], ["t_daily_gmv"], [], ["r_gmv_daily"]),
+    ("dwd.dwd_order_detail", "渠道对账", "财务对账", "王戈", ["pay_channel"], [], ["t_channel_recon"], [], ["r_channel_diff"]),
+    ("dwd.dwd_order_detail", "商家结算", "商家侧", "赵晗", ["amount", "shop_id"], [], ["t_settlement_calc"], [], []),
+    ("dwd.dwd_order_detail", "退款率监控", "风控", "孙倩", ["order_id", "amount"], [], ["t_refund_watch"], [], []),
+    ("dwd.dwd_order_detail", "订单明细导出", "BI 报表", "陈昊", ["order_id", "created_at"], [], ["t_order_export"], [], ["r_order_detail_dump"]),
+    ("dwd.dwd_order_detail", "履约时效分析", "物流运营", "周驰", ["order_id", "shop_id"], [], ["t_delivery_eta"], [], []),
+    ("dwd.dwd_order_detail", "订单宽表入湖", "实时数仓", "张岩", [], ["order_id", "amount", "pay_channel"], [], ["t_order_wide_ingest"], []),
+    ("dwd.dwd_order_detail", "订单金额回补", "数据平台", "林可", [], ["order_id", "amount"], [], ["t_amount_backfill"], []),
+    ("dwd.dwd_pay_detail", "支付成功率看板", "实时数仓", "张岩", ["pay_status"], [], ["t_pay_success"], [], []),
+    ("dwd.dwd_user_base", "用户画像特征", "算法特征", "刘越", ["user_id", "city"], [], ["t_user_feature"], [], []),
+    ("dwd.dwd_shop_base", "商家分层", "商家侧", "赵晗", ["shop_id", "shop_level"], [], ["t_shop_tier"], [], []),
+    ("dwd.dwd_shop_base", "门店热力图", "BI 报表", "陈昊", ["shop_id", "city"], [], ["t_shop_heatmap"], [], ["r_shop_heat"]),
+    ("dwd.dwd_item_base", "商品在架同步", "数据服务", "何川", ["item_id", "sale_status"], [], ["t_item_sync"], [], []),
+    ("dwd.dwd_item_base", "价格带分析", "经营分析", "李蔓", ["item_id", "list_price"], [], ["t_price_band"], [], ["r_price_band"]),
+    ("dwd.dwd_delivery_detail", "承运商月度结算", "财务对账", "王戈", ["waybill_no", "freight_amount"], [], ["t_carrier_settle"], [], []),
+    ("dwd.dwd_refund_detail", "退款原因归因", "风控", "孙倩", ["refund_id", "refund_reason"], [], ["t_refund_reason"], [], ["r_refund_reason"]),
+    ("dwd.dwd_campaign_touch", "投放 ROI", "经营分析", "李蔓", ["campaign_id", "cost_amount"], [], ["t_campaign_roi"], [], []),
+    ("dwd.dwd_inventory_daily", "库存预警", "供应链", "吴桐", ["sku_id", "stock_qty"], [], ["t_stock_alert"], [], ["r_stock_alert"]),
+    ("dwd.dwd_traffic_session", "流量漏斗", "经营分析", "李蔓", ["event_id", "user_id"], [], ["t_funnel"], [], ["r_funnel"]),
+    ("ods.ods_order_raw", "贴源校验", "数据平台", "林可", ["order_id"], [], ["t_ods_check"], [], []),
+    ("ods.ods_pay_transaction", "支付源表对账", "财务对账", "王戈", ["pay_id", "amount"], [], ["t_pay_ods_recon"], [], []),
+    ("ods.ods_pay_transaction", "支付流水入湖", "实时数仓", "张岩", [], ["pay_id", "amount", "pay_status"], [], ["t_pay_stream_ingest"], []),
+    ("ods.ods_user_profile", "画像回灌", "算法特征", "刘越", ["user_id", "mobile"], [], ["t_profile_backfill"], [], []),
+    ("ods.ods_shop_info", "门店主数据同步", "数据服务", "何川", ["shop_id", "shop_name"], [], ["t_shop_master_sync"], [], []),
+    ("ods.ods_item_snapshot", "商品快照归档", "数据服务", "何川", ["item_id"], [], ["t_item_archive"], [], ["r_item_archive"]),
+    ("ods.ods_delivery_track", "轨迹补齐", "物流运营", "周驰", ["waybill_no"], [], ["t_track_fix"], [], []),
+    ("ods.ods_refund_apply", "售后工单", "风控", "孙倩", ["refund_id", "refund_status"], [], ["t_after_sale"], [], []),
+    ("ods.ods_campaign_click", "点击归因", "经营分析", "李蔓", ["campaign_id", "user_id"], [], ["t_click_attr"], [], []),
+    ("ods.ods_inventory_snapshot", "库存快照校验", "供应链", "吴桐", ["sku_id", "stock_qty"], [], ["t_stock_check"], [], []),
+    ("ods.ods_app_event", "埋点清洗", "数据平台", "林可", ["event_id", "event_code"], [], ["t_event_clean"], [], []),
+    ("dws.dws_shop_sales_1d", "门店日报", "经营分析", "李蔓", ["shop_id", "monthly_gmv"], [], ["t_shop_daily"], [], ["r_shop_daily"]),
+    ("dws.dws_user_active_1d", "沉默召回名单", "算法特征", "刘越", ["user_id", "mobile"], [], ["t_recall_list"], [], []),
+    ("dws.dws_item_sales_1d", "商品销量榜", "BI 报表", "陈昊", ["item_id", "list_price"], [], ["t_item_rank"], [], ["r_item_rank"]),
+    ("dws.dws_delivery_sla_1d", "时效达成看板", "物流运营", "周驰", ["carrier", "delivery_status"], [], ["t_sla_achieve"], [], ["r_sla_daily"]),
+    ("dws.dws_refund_rate_1d", "退款率看板", "风控", "孙倩", ["refund_id", "refund_amount"], [], ["t_refund_rate"], [], []),
+    ("dws.dws_campaign_roi_1d", "渠道成本归集", "财务对账", "王戈", ["campaign_id", "cost_amount"], [], ["t_channel_cost"], [], []),
+    ("dim.dim_shop", "维表广播", "数据服务", "何川", ["shop_id", "shop_name"], [], ["t_dim_shop_broadcast"], [], []),
+    ("dim.dim_user", "用户维表同步", "数据服务", "何川", ["user_id", "user_name"], [], ["t_dim_user_broadcast"], [], []),
+    ("dim.dim_item", "商品维表同步", "数据服务", "何川", ["item_id", "item_name"], [], ["t_dim_item_broadcast"], [], []),
+    ("dim.dim_channel", "渠道字典下发", "数据服务", "何川", ["pay_channel"], [], ["t_channel_dict"], [], ["r_channel_dict"]),
+    ("ads.ads_gmv_daily", "管理驾驶舱", "BI 报表", "陈昊", ["dt", "monthly_gmv"], [], ["t_exec_dashboard"], [], ["r_exec_gmv"]),
+    ("ads.ads_delivery_sla", "履约月报", "物流运营", "周驰", ["carrier", "freight_amount"], [], ["t_sla_monthly"], [], ["r_sla_monthly"]),
+    ("ads.ads_refund_daily", "售后月报", "风控", "孙倩", ["refund_amount", "refund_status"], [], ["t_refund_monthly"], [], []),
+    ("ads.ads_user_growth", "增长月报", "经营分析", "李蔓", ["user_id", "register_at"], [], ["t_growth_monthly"], [], ["r_growth"]),
 ]
 
 
-# ---------------------------------------------------------------- 8 个变更申请
-# ops: ("drop", name) / ("add", {name,type,nullable,default,comment}) / ("retype", name, type) / ("rename", old, new)
+# ---------------------------------------------------------------- 9 个变更申请
+# ops: ("drop", name) / ("add", {name,type,nullable,default,comment}) / ("retype", name, type)
+#      / ("rename", old, new) / ("set_nullable", name, bool) / ("set_default", name, default)
 CHANGE_REQUEST_SPECS: list[dict] = [
     {
         "code": "CR-20260601-0001",
@@ -348,6 +353,21 @@ CHANGE_REQUEST_SPECS: list[dict] = [
         "decided_by": None,
         "decision_note": None,
     },
+    {
+        # 故障复盘单：订单宽表 amount 从可空收紧为必填并取消默认值，
+        # 旧门禁只看类型差异而放行，写入任务上线后批量失败；本单验证新门禁的类型/可空/默认值三项核对。
+        "code": "CR-20260601-0009",
+        "table": "dwd.dwd_order_detail",
+        "summary": "订单宽表 amount 收紧为必填并取消默认值（故障复盘：写入任务缺值批量失败）",
+        "ops": [
+            ("set_nullable", "amount", False),
+            ("set_default", "amount", None),
+        ],
+        "status": "checked",
+        "decided_by": None,
+        "decision_note": None,
+        "detect": True,
+    },
 ]
 
 
@@ -381,6 +401,14 @@ def apply_ops(base_fields: list[dict], ops: list[tuple]) -> list[dict]:
             for item in fields:
                 if item["name"] == op[1]:
                     item["name"] = op[2]
+        elif kind == "set_nullable":
+            for item in fields:
+                if item["name"] == op[1]:
+                    item["nullable"] = bool(op[2])
+        elif kind == "set_default":
+            for item in fields:
+                if item["name"] == op[1]:
+                    item["default"] = op[2]
     return fields
 
 

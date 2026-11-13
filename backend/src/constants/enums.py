@@ -103,6 +103,10 @@ class ChangeType(StrEnum):
     REMOVE_COLUMN = "remove_column"
     RENAME_COLUMN = "rename_column"
     TYPE_CHANGE = "type_change"
+    NULLABLE_TIGHTEN = "nullable_tighten"
+    NULLABLE_RELAX = "nullable_relax"
+    DEFAULT_REMOVE = "default_remove"
+    DEFAULT_CHANGE = "default_change"
 
 
 CHANGE_TYPE_LABELS: dict[str, str] = {
@@ -110,14 +114,48 @@ CHANGE_TYPE_LABELS: dict[str, str] = {
     ChangeType.REMOVE_COLUMN.value: "删除字段",
     ChangeType.RENAME_COLUMN.value: "重命名字段",
     ChangeType.TYPE_CHANGE.value: "类型变更",
+    ChangeType.NULLABLE_TIGHTEN.value: "收紧可空",
+    ChangeType.NULLABLE_RELAX.value: "放宽可空",
+    ChangeType.DEFAULT_REMOVE.value: "取消默认值",
+    ChangeType.DEFAULT_CHANGE.value: "默认值变更",
 }
 
 CHANGE_TYPE_ORDER: list[str] = [
     ChangeType.REMOVE_COLUMN.value,
     ChangeType.RENAME_COLUMN.value,
     ChangeType.TYPE_CHANGE.value,
+    ChangeType.NULLABLE_TIGHTEN.value,
+    ChangeType.DEFAULT_REMOVE.value,
+    ChangeType.DEFAULT_CHANGE.value,
+    ChangeType.NULLABLE_RELAX.value,
     ChangeType.ADD_COLUMN.value,
 ]
+
+# 字段契约（可空性 / 默认值）变更类型：门禁必须逐项核对类型、可空性、默认值
+CONTRACT_CHANGE_TYPES: tuple[str, ...] = (
+    ChangeType.NULLABLE_TIGHTEN.value,
+    ChangeType.NULLABLE_RELAX.value,
+    ChangeType.DEFAULT_REMOVE.value,
+    ChangeType.DEFAULT_CHANGE.value,
+)
+
+
+# ---------------------------------------------------------------- 下游依赖复核状态
+class ReviewState(StrEnum):
+    PENDING_REVIEW = "pending_review"   # 丢列读取 / 缺值写入：停在待复核，处置完成前不放行
+    CONFIRMED = "confirmed"             # 仅安全提示，确认即可
+
+
+REVIEW_STATE_LABELS: dict[str, str] = {
+    ReviewState.PENDING_REVIEW.value: "待复核",
+    ReviewState.CONFIRMED.value: "已确认",
+}
+
+# 读写用途
+USAGE_LABELS: dict[str, str] = {
+    "read": "读取",
+    "write": "写入",
+}
 
 
 # ---------------------------------------------------------------- 风险等级

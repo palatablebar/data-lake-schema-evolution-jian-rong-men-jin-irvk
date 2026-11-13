@@ -1480,3 +1480,83 @@ pre.code {
     grid-template-columns: 1fr 1fr 44px;
   }
 }
+
+/* ---------------- 待复核依赖清单（可展开原因与任务） ---------------- */
+.review-block {
+  display: grid;
+  gap: 8px;
+}
+.review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule-strong);
+  background: var(--paper-2);
+}
+.review-list {
+  display: grid;
+  gap: 6px;
+}
+.review-row {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+.review-row.danger {
+  border-left: 3px solid var(--annot);
+}
+.review-row.ok {
+  border-left: 3px solid var(--accent);
+}
+.review-head {
+  display: grid;
+  grid-template-columns: 64px minmax(140px, 1fr) minmax(0, 1.4fr) 24px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.review-head:hover {
+  background: var(--accent-wash);
+}
+.review-caret {
+  font-family: var(--font-mono);
+  color: var(--ink-faint);
+}
+.review-reasons {
+  margin: 0;
+  padding: 4px 12px 10px 74px;
+  display: grid;
+  gap: 4px;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  list-style: disc;
+}
+.review-advisory summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  padding: 4px 0;
+}
+.review-advisory .review-list {
+  margin-top: 6px;
+}
+@media (max-width: 720px) {
+  .review-head {
+    grid-template-columns: 56px 1fr 20px;
+  }
+  .review-head .muted {
+    grid-column: 1 / -1;
+  }
+  .review-reasons {
+    padding-left: 24px;
+  }
+}

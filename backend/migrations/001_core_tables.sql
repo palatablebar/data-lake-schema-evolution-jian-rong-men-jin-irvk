@@ -69,15 +69,20 @@ CREATE TABLE consumers (
     name            VARCHAR(120) NOT NULL,
     team            VARCHAR(80)  NOT NULL,
     owner           VARCHAR(120),
-    columns         JSON         NOT NULL,          -- 引用列名列表
-    tasks           JSON         NOT NULL,          -- 名下调度任务
-    reports         JSON         NOT NULL,          -- 名下报表
+    columns         JSON         NOT NULL,          -- 旧登记：引用列名并集（兼容历史数据）
+    tasks           JSON         NOT NULL,          -- 旧登记：任务名并集（兼容历史数据）
+    reports         JSON         NOT NULL,          -- 报表（恒为读取用途）
+    read_columns    JSON         NOT NULL DEFAULT '[]',  -- 读取侧引用列
+    write_columns   JSON         NOT NULL DEFAULT '[]',  -- 写入侧引用列
+    read_tasks      JSON         NOT NULL DEFAULT '[]',  -- 读取侧调度任务（查询 / 聚合）
+    write_tasks     JSON         NOT NULL DEFAULT '[]',  -- 写入侧调度任务（INSERT/UPDATE，需补值）
     refresh_cron    VARCHAR(40),
     created_at      TIMESTAMP    NOT NULL,
     CONSTRAINT uq_consumers_dataset_name UNIQUE (dataset_id, name)
 );
 
--- 附加实体 2：字段级检测结果，自然键 (request_id, field)
+-- 附加实体 2：字段级检测结果，自然键 (request_id, field, change_type)
+-- 同一字段可能同时发生类型 / 可空性 / 默认值多项契约变更，三元组保证重跑幂等
 CREATE TABLE compat_checks (
     id              SERIAL PRIMARY KEY,
     request_id      INTEGER      NOT NULL REFERENCES change_requests(id) ON DELETE CASCADE,
@@ -86,7 +91,7 @@ CREATE TABLE compat_checks (
     breaking        BOOLEAN      NOT NULL DEFAULT FALSE,
     detail          TEXT,
     created_at      TIMESTAMP    NOT NULL,
-    CONSTRAINT uq_compat_checks_request_field UNIQUE (request_id, field)
+    CONSTRAINT uq_compat_checks_request_field_type UNIQUE (request_id, field, change_type)
 );
 
 CREATE TABLE audit_logs (

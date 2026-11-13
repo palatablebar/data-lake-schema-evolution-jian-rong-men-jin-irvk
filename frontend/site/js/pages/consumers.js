@@ -1,6 +1,19 @@
 import { api } from '../api.js';
 import { ENUMS, can, compatTone, gateTone, riskTone } from '../config.js';
-import { drawer, emptyState, errorBox, errorMessage, esc, field, fmtTime, kv, table, toast } from '../ui.js';
+import {
+  bindReviewExpand,
+  drawer,
+  emptyState,
+  errorBox,
+  errorMessage,
+  esc,
+  field,
+  fmtTime,
+  kv,
+  reviewBlock,
+  table,
+  toast,
+} from '../ui.js';
 
 const state = { team: '', q: '', requestId: '' };
 
@@ -8,7 +21,7 @@ async function openRegister(view, ctx) {
   const datasets = await api.get('/api/datasets', { limit: 200 });
   const { root, close } = drawer({
     title: '登记下游消费方',
-    subtitle: '登记引用列后，影响面才可推演',
+    subtitle: '按读写用途登记引用列：读取任务看「需改查询」，写入任务看「需补值」',
     body: `<form id="consumer-form" style="display:grid;gap:10px">
       ${field({
         label: '所属表',
@@ -18,9 +31,17 @@ async function openRegister(view, ctx) {
       ${field({ label: '消费方名称', name: 'name', placeholder: '经营日报 · GMV' })}
       ${field({ label: '团队', name: 'team', placeholder: '经营分析' })}
       ${field({ label: '负责人', name: 'owner', placeholder: '李蔓' })}
-      ${field({ label: '引用列（逗号分隔）', name: 'columns', placeholder: 'amount, pay_channel' })}
-      ${field({ label: '调度任务（逗号分隔）', name: 'tasks', placeholder: 't_daily_gmv' })}
-      ${field({ label: '报表（逗号分隔）', name: 'reports', placeholder: 'r_gmv_daily' })}
+      <div class="filter-bar" style="display:grid;gap:8px">
+        <div class="eyebrow">读取侧（SELECT / 聚合 / 报表数据来源）</div>
+        ${field({ label: '读取引用列（逗号分隔）', name: 'read_columns', placeholder: 'amount, pay_channel' })}
+        ${field({ label: '读取任务（逗号分隔）', name: 'read_tasks', placeholder: 't_daily_gmv' })}
+      </div>
+      <div class="filter-bar" style="display:grid;gap:8px">
+        <div class="eyebrow">写入侧（INSERT / UPDATE 调度，契约收紧时需补值）</div>
+        ${field({ label: '写入引用列（逗号分隔）', name: 'write_columns', placeholder: 'order_id, amount' })}
+        ${field({ label: '写入任务（逗号分隔）', name: 'write_tasks', placeholder: 't_order_wide_ingest' })}
+      </div>
+      ${field({ label: '报表（逗号分隔，恒为读取用途）', name: 'reports', placeholder: 'r_gmv_daily' })}
       <div class="form-error" id="consumer-error"></div>
       <button class="btn accent" type="submit">保存</button>
     </form>`,
@@ -35,11 +56,13 @@ async function openRegister(view, ctx) {
         name: form.name.value.trim(),
         team: form.team.value.trim(),
         owner: form.owner.value.trim() || null,
-        columns: split(form.columns.value),
-        tasks: split(form.tasks.value),
+        read_columns: split(form.read_columns.value),
+        write_columns: split(form.write_columns.value),
+        read_tasks: split(form.read_tasks.value),
+        write_tasks: split(form.write_tasks.value),
         reports: split(form.reports.value),
       });
-      toast('消费方已登记，影响面会立即生效');
+      toast('消费方已登记，读写影响面会立即生效');
       close();
       await consumersPage.render(view, ctx);
     } catch (err) {
@@ -67,23 +90,27 @@ async function renderImpact(container, requestId) {
       ${kv([
         ['受影响列', `<span class="mono">${esc((impact.affected_fields || []).join('、') || '无')}</span>`],
         ['消费方', `${impact.consumer_count} 个`],
-        ['影响任务', `<b>${impact.task_count}</b> 个（≥3 记 critical）`],
+        ['影响任务', `<b>${impact.task_count}</b> 个（读 ${impact.read_tasks?.length || 0} / 写 ${impact.write_tasks?.length || 0}，并集去重）`],
         ['影响报表', `${impact.report_count} 张`],
+        ['待复核', impact.pending_count ? `<b class="badge danger">${impact.pending_count} 项</b>` : '0 项']],
       ])}
       ${
         (impact.affected_consumers || []).length
           ? `<div class="ledger" style="margin-top:8px">${impact.affected_consumers
               .map(
-                (item) => `<div class="ledger-row" style="grid-template-columns:1.1fr 1fr 58px 58px">
+                (item) => `<div class="ledger-row" style="grid-template-columns:1.1fr 1fr 52px 52px 60px">
                   <b>${esc(item.name)}<div class="t">${esc(item.team)} · ${esc(item.owner || '—')}</div></b>
-                  <span class="mono">${esc(item.hit_columns.join(', '))}</span>
-                  <span class="mono">${item.tasks.length} 任务</span>
-                  <span class="mono">${item.reports.length} 报表</span>
+                  <span class="mono">${esc((item.hit_columns || []).join(', '))}</span>
+                  <span class="mono">读 ${(item.read_tasks || []).length}</span>
+                  <span class="mono">写 ${(item.write_tasks || []).length}</span>
+                  ${item.review_state === 'pending_review' ? '<span class="badge danger">待复核</span>' : '<span class="badge ok">已确认</span>'}
                 </div>`,
               )
               .join('')}</div>`
           : '<p class="muted">该变更没有命中任何下游引用列。</p>'
       }
+      <h3 style="margin:12px 0 4px;font-size:0.9rem">下游处置（展开看原因与任务）</h3>
+      <div id="impact-review-mount">${reviewBlock(impact)}</div>
       ${
         (detail.checks || []).length
           ? `<h3 style="margin:12px 0 4px;font-size:0.9rem">字段级检测（${detail.checks.length}）</h3>
@@ -99,6 +126,7 @@ async function renderImpact(container, requestId) {
                .join('')}</div>`
           : '<p class="muted" style="margin-top:8px">该变更尚未执行字段级检测（可到「变更申请」点开单据重跑）。</p>'
       }`;
+    bindReviewExpand(container);
   } catch (err) {
     container.innerHTML = errorBox(errorMessage(err));
   }
@@ -145,8 +173,22 @@ export const consumersPage = {
                 columns: [
                   { key: 'name', label: '消费方', render: (row) => `<b>${esc(row.name)}</b><div class="mono muted">${esc(row.dataset_name)}</div>` },
                   { key: 'team', label: '团队' },
-                  { key: 'columns', label: '引用列', render: (row) => `<span class="mono muted">${esc(row.columns.join(', '))}</span>` },
-                  { key: 'task_count', label: '任务', className: 'num' },
+                  {
+                    key: 'read_columns',
+                    label: '读引用列',
+                    render: (row) => `<span class="mono muted">${esc((row.read_columns || []).join(', '))}</span>`,
+                  },
+                  {
+                    key: 'write_columns',
+                    label: '写引用列',
+                    render: (row) => `<span class="mono muted">${esc((row.write_columns || []).join(', ') || '—')}</span>`,
+                  },
+                  {
+                    key: 'task_count',
+                    label: '任务(读/写)',
+                    className: 'num',
+                    render: (row) => `${row.task_count}<span class="muted">（${row.read_task_count || 0}/${row.write_task_count || 0}）</span>`,
+                  },
                   { key: 'report_count', label: '报表', className: 'num' },
                 ],
                 empty: { title: '没有匹配的消费方', hint: '换个团队或清空搜索。' },

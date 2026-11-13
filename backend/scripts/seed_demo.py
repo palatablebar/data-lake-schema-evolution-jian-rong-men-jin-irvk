@@ -1,4 +1,4 @@
-"""幂等 seed：3 账号 / 36 张湖仓表 / 86 个版本 / 42 个下游消费方 / 8 个变更申请 / 8 条字段级检测。
+"""幂等 seed：3 账号 / 36 张湖仓表 / 86 个版本 / 45 个下游消费方 / 9 个变更申请 / 字段级检测。
 
 自然键 upsert（重复执行不新增；已被人审批过的变更单不覆盖结论）：
   users.email
@@ -103,7 +103,7 @@ def ensure_datasets(db) -> int:
 
 def ensure_consumers(db) -> int:
     datasets = {dataset.full_name: dataset for dataset in db.scalars(select(Dataset)).all()}
-    for table, name, team, owner, columns, tasks, reports in CONSUMERS:
+    for table, name, team, owner, read_columns, write_columns, read_tasks, write_tasks, reports in CONSUMERS:
         dataset = datasets.get(table)
         if dataset is None:
             raise RuntimeError(f"seed: consumer {name} 引用了不存在的表 {table}")
@@ -111,16 +111,22 @@ def ensure_consumers(db) -> int:
             select(Consumer).where(Consumer.dataset_id == dataset.id, Consumer.name == name)
         )
         if existing is None:
+            legacy_columns = [*read_columns, *[column for column in write_columns if column not in read_columns]]
+            legacy_tasks = [*read_tasks, *[task for task in write_tasks if task not in read_tasks]]
             db.add(
                 Consumer(
                     dataset_id=dataset.id,
                     name=name,
                     team=team,
                     owner=owner,
-                    columns=columns,
-                    tasks=tasks,
+                    columns=legacy_columns,
+                    tasks=legacy_tasks,
                     reports=reports,
-                    refresh_cron="0 3 * * *" if not tasks or "realtime" not in tasks[0] else "*/10 * * * *",
+                    read_columns=read_columns,
+                    write_columns=write_columns,
+                    read_tasks=read_tasks,
+                    write_tasks=write_tasks,
+                    refresh_cron="0 3 * * *" if not read_tasks or "realtime" not in read_tasks[0] else "*/10 * * * *",
                 )
             )
     db.flush()

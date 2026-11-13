@@ -22,7 +22,14 @@ def create_consumer(db: Session, payload: dict, principal: dict, request: Reques
         action="consumer.create",
         entity="consumer",
         entity_id=row.id,
-        detail={"name": row.name, "table": dataset.full_name if dataset else None, "columns": row.columns},
+        detail={
+            "name": row.name,
+            "table": dataset.full_name if dataset else None,
+            "read_columns": row.read_columns,
+            "write_columns": row.write_columns,
+            "read_tasks": row.read_tasks,
+            "write_tasks": row.write_tasks,
+        },
         ip=request.client.host if request.client else None,
     )
     db.commit()

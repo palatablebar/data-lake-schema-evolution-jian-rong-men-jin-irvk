@@ -20,7 +20,7 @@ export const BRAND = {
   spec: [
     ['接入表', '36 / 240 张核心表已登记'],
     ['版本快照', '86 个已提交版本'],
-    ['下游登记', '42 个消费方 / 10 个团队'],
+    ['下游登记', '45 个消费方 / 11 个团队'],
     ['门禁口径', 'breaking → block，其余放行'],
   ],
 };
@@ -61,8 +61,19 @@ export const ENUMS = {
   compat: { backward: '向后兼容', forward: '向前兼容', full: '完全兼容', breaking: '破坏性变更' },
   gate: { pass: '放行', block: '阻塞' },
   status: { submitted: '待检测', checked: '已检测待审批', approved: '已放行', rejected: '已驳回' },
-  changeType: { add_column: '新增字段', remove_column: '删除字段', rename_column: '重命名字段', type_change: '类型变更' },
+  changeType: {
+    add_column: '新增字段',
+    remove_column: '删除字段',
+    rename_column: '重命名字段',
+    type_change: '类型变更',
+    nullable_tighten: '收紧可空',
+    nullable_relax: '放宽可空',
+    default_remove: '取消默认值',
+    default_change: '默认值变更',
+  },
   risk: { low: '低', medium: '中', high: '高', critical: '严重' },
+  reviewState: { pending_review: '待复核', confirmed: '已确认' },
+  usage: { read: '读取', write: '写入' },
 };
 
 export const FIELD_TYPES = [
@@ -103,5 +114,14 @@ export function statusTone(status) {
 }
 
 export function changeTypeTone(changeType) {
-  return { remove_column: 'danger', rename_column: 'warn', type_change: 'warn', add_column: 'ok' }[changeType] || 'info';
+  return {
+    remove_column: 'danger',
+    rename_column: 'warn',
+    type_change: 'warn',
+    nullable_tighten: 'danger',
+    default_remove: 'warn',
+    default_change: 'info',
+    nullable_relax: 'ok',
+    add_column: 'ok',
+  }[changeType] || 'info';
 }

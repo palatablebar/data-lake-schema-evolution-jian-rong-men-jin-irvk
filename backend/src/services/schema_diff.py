@@ -16,6 +16,12 @@
    其余类型变更（string→int、double→float、decimal→int、decimal 缩容等）一律 breaking。
 3. 新增字段：nullable=True 或带 default → 安全；非空且无默认值 → breaking（存量行无法回填）。
 4. 删除字段：一律 breaking（旧读者的 SELECT 会直接失败）。
+5. 同名字段的契约变更（类型之外，逐项核对可空性与默认值，可与类型变更并存、各自成条）：
+   - nullable True→False（收紧可空）：breaking。写入侧不再接受缺值，未补值的写入任务会批量失败；
+     读取侧不报错（旧数据仍可能为 NULL，读者需处理空值）。
+   - nullable False→True（放宽可空）：安全。
+   - 默认值被取消（有 → 无）且目标非空：breaking（写入侧失去兜底）；目标仍可空则安全。
+   - 默认值变更（有 → 另一个值）：安全，仅影响后续写入的填充值，不动存量数据。
 """
 from __future__ import annotations
 
@@ -153,6 +159,10 @@ def diff_fields(base_fields: list[dict], target_fields: list[dict]) -> list[dict
                 "new_name": new["name"],
                 "similarity": score,
                 "position": old["position"],
+                "from_nullable": old["nullable"],
+                "to_nullable": new["nullable"],
+                "from_default": old.get("default"),
+                "to_default": new.get("default"),
                 "detail": (
                     f"{old['name']} → {new['name']}：同位置同类型，名称相似度 {score:.2f} "
                     f"≥ {RENAME_SIMILARITY_THRESHOLD}，按重命名处理；引用旧列名的下游会读不到列"
@@ -176,6 +186,10 @@ def diff_fields(base_fields: list[dict], target_fields: list[dict]) -> list[dict
                 "new_name": None,
                 "similarity": None,
                 "position": item["position"],
+                "from_nullable": item["nullable"],
+                "to_nullable": None,
+                "from_default": item.get("default"),
+                "to_default": None,
                 "detail": f"删除 {item['name']}（{item['type']}）：引用该列的查询与报表会直接报列不存在",
             }
         )
@@ -200,34 +214,109 @@ def diff_fields(base_fields: list[dict], target_fields: list[dict]) -> list[dict
                 "new_name": None,
                 "similarity": None,
                 "position": item["position"],
+                "from_nullable": None,
+                "to_nullable": item["nullable"],
+                "from_default": None,
+                "to_default": item.get("default"),
                 "detail": f"新增 {item['name']}（{item['type']}）：{why}",
             }
         )
 
-    # 4) 同名但类型变化
+    # 4) 同名字段：类型矩阵 + 可空性 + 默认值（三类契约各自成条，互不吞并）
     for item in target:
         previous = base_index.get(item["name"])
         if previous is None:
             continue
-        if previous["type"] == item["type"]:
-            continue
-        safe = is_safe_promotion(previous["type"], item["type"])
-        diffs.append(
-            {
-                "field": item["name"],
-                "change_type": ChangeType.TYPE_CHANGE.value,
-                "breaking": not safe,
-                "from_type": previous["type"],
-                "to_type": item["type"],
-                "new_name": None,
-                "similarity": None,
-                "position": item["position"],
-                "detail": (
-                    f"{item['name']} 类型 {previous['type']} → {item['type']}："
-                    + ("安全提升，旧分区可隐式读取" if safe else "非安全提升，历史分区读取会失败或丢精度")
-                ),
-            }
-        )
+        common = {
+            "from_type": previous["type"],
+            "to_type": item["type"],
+            "new_name": None,
+            "similarity": None,
+            "position": item["position"],
+            "from_nullable": previous["nullable"],
+            "to_nullable": item["nullable"],
+            "from_default": previous.get("default"),
+            "to_default": item.get("default"),
+        }
+        if previous["type"] != item["type"]:
+            safe = is_safe_promotion(previous["type"], item["type"])
+            diffs.append(
+                {
+                    "field": item["name"],
+                    "change_type": ChangeType.TYPE_CHANGE.value,
+                    "breaking": not safe,
+                    **common,
+                    "detail": (
+                        f"{item['name']} 类型 {previous['type']} → {item['type']}："
+                        + ("安全提升，旧分区可隐式读取" if safe else "非安全提升，历史分区读取会失败或丢精度")
+                    ),
+                }
+            )
+        diffs.extend(_contract_diffs(item["name"], common, previous, item))
 
     diffs.sort(key=lambda entry: (0 if entry["breaking"] else 1, entry["position"], entry["field"]))
     return diffs
+
+
+def _has_default(value) -> bool:
+    return value not in (None, "")
+
+
+def _contract_diffs(field_name: str, common: dict, previous: dict, current: dict) -> list[dict]:
+    """同名字段的可空性 / 默认值契约变更，逐条产出（门禁按类型、可空性、默认值分别核对）。"""
+    entries: list[dict] = []
+    if previous["nullable"] is not current["nullable"]:
+        tightened = previous["nullable"] and not current["nullable"]
+        if tightened:
+            detail = (
+                f"{field_name} 可空性 可空 → 必填（NOT NULL）：写入侧不再接受缺值，"
+                "未给该列补值的写入任务会批量失败；读取侧需继续处理存量 NULL"
+            )
+        else:
+            detail = f"{field_name} 可空性 必填 → 可空：放宽约束，旧写入与读取均不受影响"
+        entries.append(
+            {
+                "field": field_name,
+                "change_type": ChangeType.NULLABLE_TIGHTEN.value if tightened else ChangeType.NULLABLE_RELAX.value,
+                "breaking": tightened,
+                **common,
+                "detail": detail,
+            }
+        )
+
+    had_default, has_default = _has_default(previous.get("default")), _has_default(current.get("default"))
+    if had_default and not has_default:
+        breaking = not current["nullable"]
+        if breaking:
+            detail = (
+                f"{field_name} 取消默认值（原默认 {previous.get('default')}）且目标为必填："
+                "写入侧失去兜底，未显式赋值的写入任务会失败，需在写入前补值"
+            )
+        else:
+            detail = (
+                f"{field_name} 取消默认值（原默认 {previous.get('default')}），目标仍可空："
+                "未赋值时按 NULL 写入，读取侧不受影响"
+            )
+        entries.append(
+            {
+                "field": field_name,
+                "change_type": ChangeType.DEFAULT_REMOVE.value,
+                "breaking": breaking,
+                **common,
+                "detail": detail,
+            }
+        )
+    elif had_default and has_default and str(previous.get("default")) != str(current.get("default")):
+        entries.append(
+            {
+                "field": field_name,
+                "change_type": ChangeType.DEFAULT_CHANGE.value,
+                "breaking": False,
+                **common,
+                "detail": (
+                    f"{field_name} 默认值 {previous.get('default')} → {current.get('default')}："
+                    "仅影响后续写入的填充值，存量数据不变，读取侧不受影响"
+                ),
+            }
+        )
+    return entries

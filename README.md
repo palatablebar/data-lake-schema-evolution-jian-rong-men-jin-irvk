@@ -16,7 +16,7 @@
   1. 09:20 周棠（数据开发）在「表目录与版本」确认 `dwd.dwd_order_detail` 当前为 v4、8 个字段、下游 7 个消费方；
   2. 09:31 提交变更：删除 `pay_channel`、`amount` 由 `decimal(12,2)` 改 `bigint`，另补 6 个可空列；
   3. 09:31 后端同步算出 8 条字段级判定、兼容级别 `breaking`、风险 `critical`、门禁 `block`；
-  4. 09:34 影响面显示 5 个下游消费方 / 5 个调度任务 / 2 张报表，含「渠道对账」「经营日报 · GMV」；
+  4. 09:34 影响面显示 7 个受影响下游 / 7 个调度任务（读 5 写 2，并集去重）/ 2 张报表 / 9 项待复核：读侧 5 个任务进「需改查询」（含「渠道对账」「经营日报 · GMV」），写侧 2 个任务进「需补值」（含「订单宽表入湖」），每条依赖可展开看原因；
   5. 09:40 林可（平台管理员）在「变更申请」里填放行理由（下游已切兼容视图、回滚已演练）后放行，状态变 `approved`；
   6. 09:45 「迁移单与导出」导出 `CR-*-0002_migration.sql`（含 `ADD COLUMN`、兼容视图与回滚脚本）与 `checks.csv`；
   7. 10:00 陈默（下游只读）在「下游影响」只读复核，无提交/放行按钮，越权调用返回 403。
@@ -44,9 +44,13 @@
 
 1. **表目录与版本**：36 张湖仓表 + 86 个已提交版本快照（`Dataset` / `SchemaVersion`），抽屉里按版本倒序看字段演进。
 2. **变更申请**：字段级编辑目标结构 → 后端算 diff、兼容级别、风险、门禁，左右双栏对照 + 逐字段判定依据。
-3. **兼容检测**：`POST /api/change-requests/{id}/run` 重跑判定并把结果落到字段级 `CompatCheck`（可重跑、幂等）。
-4. **下游影响**：42 个消费方（10 个团队）登记引用列 / 任务 / 报表，按引用列推演受影响任务数与报表数。
-5. **迁移单与导出**：迁移单含正向 SQL、兼容视图、阻塞项与回滚脚本；导出 CSV（UTF-8 BOM）与 `.sql`。
+   门禁对同名字段逐项核对**类型、可空性、默认值**三类契约（可并存、各自成条），收紧可空 / 非空列取消默认不再被静默放行。
+3. **兼容检测**：`POST /api/change-requests/{id}/run` 重跑判定并把结果落到字段级 `CompatCheck`
+   （自然键 `(request_id, field, change_type)`，同字段多项契约变更各自成行；重跑按三元组 upsert，判定与影响不重复累积）。
+4. **下游影响**：45 个消费方（11 个团队）按读写用途登记——读取侧 `read_columns/read_tasks`、写入侧
+   `write_columns/write_tasks`、报表恒为读取；按引用列推演「需改查询」（丢列读取）与「需补值任务」（缺值写入），
+   任务 / 报表跨消费方并集去重，命中的依赖停在**待复核**并可在页面展开原因与任务。
+5. **迁移单与导出**：迁移单含正向 SQL（含 NOT NULL / DEFAULT 契约子句）、兼容视图、待复核阻塞项与回滚脚本；导出 CSV（UTF-8 BOM）与 `.sql`。
 6. **审计**：登录 / 提交变更 / 检测 / 放行 / 驳回 / 导出全量落审计（领域层 + HTTP 层）。
 
 ## 4. 快速启动
@@ -123,25 +127,37 @@ frontend/site/
   - 破坏性：`string→int`、`double→float`、`decimal→整型`、decimal 缩容等一切非安全提升。
 - 新增字段：`nullable=true` 或带 `default` → 安全；非空且无默认值 → breaking（存量分区无法回填）。
 - 删除字段：一律 breaking。
+- 同名字段的契约变更（类型之外逐项核对，可与类型变更并存、各自成条）：
+  - 可空性 `true→false`（收紧必填）→ breaking：写入侧不再接受缺值，未补值的写入任务批量失败；读取侧不报错（存量 NULL 仍需处理）。
+  - 可空性 `false→true`（放宽）→ 安全。
+  - 默认值取消（有 → 无）：目标必填 → breaking（写入失去兜底）；目标仍可空 → 安全。
+  - 默认值变更（有 → 另一值）→ 安全，仅影响后续写入填充值。
+- 每条 diff 都带 `from/to_nullable`、`from/to_default` 契约快照，供门禁与迁移单直接引用。
 
 ### 算法 B｜兼容判定 + 影响传播 + 迁移单（`services/compat_engine.py`）
 
+- 下游登记按读写用途分开：`read_columns/read_tasks`（SELECT / 聚合 / 报表来源）与
+  `write_columns/write_tasks`（INSERT/UPDATE 调度）；旧登记只有 `columns/tasks` 时按读取侧兜底。
 - 兼容级别 `compat`：
-  - `breaking`：diff 中存在任一 breaking 条目；
-  - `backward`：只有新增（含安全提升），旧读者读新表不受影响；
+  - `breaking`：diff 中存在任一 breaking 条目（含收紧可空、非空列取消默认）；
+  - `backward`：只有新增（含安全提升、放宽可空、默认值变更），旧读者读新表不受影响；
   - `forward`：只有删除 / 重命名，新读者读旧表不受影响；
   - `full`：既有新增又有删除且全部安全。
   - 说明：按当前矩阵「删除一律 breaking」，因此线上实际只会产出 `backward` 与 `breaking`；
     `forward/full` 保留为 Avro 口径的完整词表（见第 12 节已知差异）。
-- 影响传播：被影响列 = `remove_column / rename_column / type_change` 中 breaking 的字段；
-  受影响消费方 = 其引用列与这些列有交集的 `Consumer`；任务 / 报表数 = 命中消费方名下
-  `tasks` / `reports` 的**并集去重计数**。
+- 影响传播按读写两侧分别推演（被影响列均取 breaking 条目）：
+  - 读侧破坏列 = 删列 / 重命名 / 非安全类型变更：引用它的读取任务与报表属于**丢列读取**，
+    进入 `queries_to_fix`（需改查询），依赖停在 `pending_review`（待复核）。
+  - 写侧破坏列 = 读侧破坏列 + 收紧可空 + 非空列取消默认 + 新增非空无默认：引用它的写入任务属于
+    **缺值写入**，进入 `backfill_tasks`（需补值），同样停在待复核。
+  - 仅写侧破坏（如收紧可空）不阻塞读取：读取消费方仍进影响面，但状态为 `confirmed`（安全提示，提醒处理存量 NULL）。
+  - 任务 / 报表按名称跨消费方**并集去重**；同名任务同时被读 / 写命中时只保留一条待复核（写侧优先）。
 - 风险 `risk`：breaking 且任务 ≥ 3 → `critical`（计划验收口径），breaking 且 < 3 → `high`；
   非 breaking 时任务 ≥ 8 → `critical`、≥ 3 → `high`、≥ 1 → `medium`、否则 `low`。
 - 门禁 `gate`：`compat == breaking → block`，其余 `pass`。
-- 迁移单 `migration_sql`（五段）：① 前置校验 SELECT；② 正向迁移（`ADD COLUMN` / `RENAME COLUMN` /
-  `ALTER COLUMN TYPE`，删列注释为下游切换后独立执行）；③ 兼容视图（旧列名兜底）；
-  ④ 阻塞项清单；⑤ **回滚脚本**（逆序还原类型、列名、被删列、新增列与视图）。
+- 迁移单 `migration_sql`（五段）：① 前置校验 SELECT（收紧必填先查 NULL 行数）；② 正向迁移
+  （`ADD/RENAME/ALTER TYPE`、`SET/DROP NOT NULL`、`SET/DROP DEFAULT`，删列注释为下游切换后独立执行）；
+  ③ 兼容视图（旧列名兜底）；④ 阻塞项清单（含每条待复核依赖与原因）；⑤ **回滚脚本**（逆序还原全部契约）。
 
 ## 9. 共享枚举出现位置
 
@@ -152,7 +168,8 @@ frontend/site/
 | 兼容级别 `backward/forward/full/breaking` | `constants/enums.py::Compat` | `js/config.js::ENUMS.compat` | `pages/changes.js`、`services/export_service.py` |
 | 门禁 `pass/block` | `constants/enums.py::Gate` | `js/config.js::ENUMS.gate` | `compat_engine.resolve_gate` |
 | 变更状态 `submitted/checked/approved/rejected` | `constants/enums.py::ChangeStatus` | `js/config.js::ENUMS.status` | `services/change_service.py`、`pages/exports.js` |
-| 字段变更类型 `add/remove/rename/type_change` | `constants/enums.py::ChangeType` | `js/config.js::ENUMS.changeType` | `pages/exports.js`、`pages/changes.js` |
+| 字段变更类型 `add/remove/rename/type_change/nullable_tighten/nullable_relax/default_remove/default_change` | `constants/enums.py::ChangeType` | `js/config.js::ENUMS.changeType` | `pages/exports.js`、`pages/changes.js`、`services/schema_diff.py` |
+| 复核状态 `pending_review/confirmed`、读写用途 `read/write` | `constants/enums.py::ReviewState` | `js/config.js::ENUMS.reviewState/usage` | `services/compat_engine.py`、`pages/changes.js`、`pages/consumers.js` |
 | 风险 `low/medium/high/critical` | `constants/enums.py::Risk` | `js/config.js::ENUMS.risk` | `pages/overview.js`、`pages/changes.js` |
 
 ## 10. API
@@ -170,8 +187,8 @@ frontend/site/
 | POST | `/api/change-requests` | 提交变更并判定 | analyst |
 | POST | `/api/change-requests/{id}/run` | 重跑兼容检测，落 `CompatCheck` | analyst |
 | POST | `/api/change-requests/{id}/decision` | 放行 / 驳回（`block` 放行必须填理由，否则 422） | admin |
-| GET | `/api/consumers` | 下游消费方（`dataset_id`/`team`/`q`） | viewer |
-| POST | `/api/consumers` | 登记消费方（同名 409） | analyst |
+| GET | `/api/consumers` | 下游消费方（`dataset_id`/`team`/`q`），返回读写分离字段 | viewer |
+| POST | `/api/consumers` | 登记消费方（`read_columns/write_columns/read_tasks/write_tasks/reports`；旧 `columns/tasks` 仍兼容，按读取侧解释；同名 409） | analyst |
 | GET | `/api/compat-checks` | 字段级检测（`request_id`/`change_type`/`breaking`） | viewer |
 | GET | `/api/exports/checks.csv` | 检测清单 CSV（UTF-8 BOM） | analyst |
 | GET | `/api/exports/migrations/{id}.sql` | 迁移单 SQL | analyst |

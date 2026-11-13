@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { ENUMS, FIELD_TYPES, can, compatTone, gateTone, riskTone, statusTone } from '../config.js';
 import {
+  bindReviewExpand,
   diffColumns,
   diffLedger,
   drawer,
@@ -11,6 +12,7 @@ import {
   field,
   fmtTime,
   kv,
+  reviewBlock,
   sqlBlock,
   table,
   toast,
@@ -150,16 +152,19 @@ function impactBlock(detail) {
   return `<div class="ledger">
     ${(impact.affected_consumers || [])
       .map(
-        (item) => `<div class="ledger-row" style="grid-template-columns:1.1fr 1fr 58px 58px">
+        (item) => `<div class="ledger-row" style="grid-template-columns:1.1fr 1fr 58px 58px 64px">
           <b>${esc(item.name)}<div class="t">${esc(item.team)} · ${esc(item.owner || '—')}</div></b>
-          <span class="mono">命中列 ${esc(item.hit_columns.join(', '))}</span>
-          <span class="mono">${item.tasks.length} 任务</span>
-          <span class="mono">${item.reports.length} 报表</span>
+          <span class="mono">命中列 ${esc((item.hit_columns || []).join(', '))}</span>
+          <span class="mono">读 ${(item.read_tasks || []).length} 任务</span>
+          <span class="mono">写 ${(item.write_tasks || []).length} 任务</span>
+          ${item.review_state === 'pending_review' ? '<span class="badge danger">待复核</span>' : '<span class="badge ok">已确认</span>'}
         </div>`,
       )
       .join('')}
   </div>
-  <div class="annot-note">影响面：${impact.consumer_count} 个消费方 · ${impact.task_count} 个任务 · ${impact.report_count} 张报表（任务 ≥3 记 critical）</div>`;
+  <div class="annot-note">影响面：${impact.consumer_count} 个消费方 · 读 ${impact.read_tasks?.length || 0} / 写 ${impact.write_tasks?.length || 0} 个任务（并集去重 ${impact.task_count}）· ${impact.report_count} 张报表</div>
+  <h3 style="margin:12px 0 4px;font-size:0.9rem">下游处置与待复核</h3>
+  <div id="review-mount">${reviewBlock(impact)}</div>`;
 }
 
 async function openDetail(view, ctx, requestId) {
@@ -197,7 +202,8 @@ async function openDetail(view, ctx, requestId) {
         <span class="badge">${detail.diff_count} 项变更 / ${detail.breaking_count} 项破坏</span>
       </div>
       ${kv([
-        ['影响面', `${detail.affected_consumers} 个下游 · ${detail.affected_tasks} 个任务 · ${detail.affected_reports} 张报表`],
+        ['影响面', `${detail.affected_consumers} 个下游 · 读 ${detail.read_task_count || 0} / 写 ${detail.write_task_count || 0} 任务 · ${detail.affected_reports} 张报表`],
+        ['待复核依赖', detail.pending_review_count ? `<b>${detail.pending_review_count}</b> 项（需改查询 ${(detail.queries_to_fix || []).length} · 需补值 ${(detail.backfill_tasks || []).length}）` : '无'],
         ['检测时间', fmtTime(detail.checked_at)],
         ['审批结论', detail.decision_note ? esc(detail.decision_note) : '—'],
       ])}
@@ -217,11 +223,12 @@ async function openDetail(view, ctx, requestId) {
       ${actionHtml}
     </div>`,
   });
+  bindReviewExpand(root);
 
   root.querySelector('[data-run]')?.addEventListener('click', async () => {
     try {
       const updated = await api.post(`/api/change-requests/${detail.id}/run`, {});
-      toast(`检测完成：${updated.compat_label}，${updated.diff_count} 项字段级判定`);
+      toast(`检测完成：${updated.compat_label}，${updated.diff_count} 项字段级判定，待复核 ${updated.pending_review_count} 项`);
       close();
       await changesPage.render(view, ctx);
       openDetail(view, ctx, detail.id);
@@ -308,8 +315,21 @@ export const changesPage = {
             { key: 'compat', label: '兼容', render: (row) => `<span class="badge ${compatTone(row.compat)}">${esc(row.compat_label)}</span>` },
             { key: 'gate', label: '门禁', render: (row) => `<span class="badge ${gateTone(row.gate)}">${esc(row.gate_label)}</span>` },
             { key: 'risk', label: '风险', render: (row) => `<span class="badge ${riskTone(row.risk)}">${esc(row.risk_label)}</span>` },
-            { key: 'affected_tasks', label: '影响任务', className: 'num' },
+            {
+              key: 'affected_tasks',
+              label: '影响任务(读/写)',
+              className: 'num',
+              render: (row) => `${row.affected_tasks}<span class="muted">（${row.read_task_count || 0}/${row.write_task_count || 0}）</span>`,
+            },
             { key: 'affected_reports', label: '报表', className: 'num' },
+            {
+              key: 'pending_review_count',
+              label: '待复核',
+              className: 'num',
+              render: (row) => (row.pending_review_count
+                ? `<span class="badge danger" data-testid="pending-count">${row.pending_review_count}</span>`
+                : '<span class="muted">0</span>'),
+            },
             { key: 'status', label: '状态', render: (row) => `<span class="badge ${statusTone(row.status)}">${esc(row.status_label)}</span>` },
           ],
           empty: { title: '没有匹配的变更申请', hint: '换个筛选，或点右上「提交变更」。' },
